@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Three.js SandBox</title>
+    <script type="text/javascript" src="js/three.js"></script>
+    <script type="text/javascript" src="js/jquery-1.9.0.js"></script>
+    <script type="text/javascript" src="js/loaders/OBJLoader.js"></script>
+    <script type="text/javascript" src="js/loaders/MTLLoader.js"></script>
+    <script type="text/javascript" src="js/loaders/OBJMTLLoader.js"></script>
+    <script type="text/javascript" src="js/controls/FlyControls.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="div3D">
+    </div>
+
+    
+
+    <!-- Water Vetex Shader -->
+    <script type="x-shader/x-vertex" id="waterVertexShader">
+
+        // Varying is GLES equivalent for Output variables
+        varying vec4 v_position;
+        varying vec3 v_normal;
+        varying float reflFactor;		// reflection coefficient
+
+        uniform float t;			// real time
+
+        float wave(float A, float x, float y, float t)
+        {
+            t *= 2.0;
+            return A * (
+                sin(2.0 * (x * 0.2 + y * 0.7) + t * 1.0) +
+                sin(2.0 * (x * 0.7 + y * 0.2) + t * 0.8) +
+                pow(sin(2.0 * (x * 0.6 + y * 0.5) + t * 1.2), 2.0) +
+                pow(sin(2.0 * (x * 0.8 + y * 0.2) + t * 1.1), 2.0));
+        }
+
+        void main()
+        {
+            // Calculate the wave
+            float a = 0.05;
+            float y = wave(a, position.x, position.z, t);
+
+            float d = 0.05;
+            float dx = (wave(a, position.x+d, position.z, t) - wave(a, position.x-d, position.z, t)) / 2.0 / d;
+            float dz = (wave(a, position.x, position.z+d, t) - wave(a, position.x, position.z-d, t)) / 2.0 / d;
+
+            v_position = vec4(position.x, y, position.z, 1.0);
+            v_normal = normalize(vec3(-dx, 1.0, -dz));
+
+            // calculate position
+            v_position = modelViewMatrix * v_position;
+            gl_Position = projectionMatrix * v_position;
+
+            // calculate normal
+            v_normal = normalize(mat3(modelViewMatrix) * v_normal);
+
+            // calculate reflection coefficient
+            // using Schlick's approximation of Fresnel formula
+            float cosTheta = dot(v_normal, normalize(-v_position.xyz));
+            float R0 = 0.02;
+            reflFactor = R0 + (1.0 - R0) * pow(1.0 - cosTheta, 5.0);
+        }
+    </script>
+
+    <!-- Water Fragment Shader -->
+    <script type="x-shader/x-fragment" id="waterFragmentShader">
+
+        // Input Variables (received from Vertex Shader)
+        varying float reflFactor;			// reflection coefficient
+
+        // Water-related
+        uniform vec3 waterColor;
+        uniform vec3 skyColor;
+
+        void main()
+        {
+            gl_FragColor = mix(vec4(waterColor, 0.0), vec4(skyColor, 1.0), reflFactor);
+        }
+    </script>
+    <!-- End Shaders -->
+    <!-- Javascript code -->
+    <script type="text/javascript">
+
+        var scene, camera, renderer, controls, terrain, water, plane = null, tent = null, campfire = null, palmtree = null;
+        var waterMaterial;
+        // smoke variables
+        var smokeParticles = [];
+        var smokeGeometry;
+        var smokeSystem;
+        var nextPlumeTime = 0;
+        var animateSmoke = null;
+        // fire variables
+
+        var fireParticles = [];
+        var fireGeometry;
+        var fireSystem;
+        var animateFire = null;
+        // audio variables
+        var campfireAudio = null;
+        var planeAudio = null;
+        var ambientAudio = null;
+        var listenerContext;
+        var ambientFilter, campfireFilter, planeFilter;
+
+        $(function () {
+            // disable mouse visability
+            document.body.addEventListener('click', () => {
+                document.body.style.cursor = 'none';
+            });
+            // create the scene - the main object that contains everything else
+            scene = new THREE.Scene();
+            //ambient audio
+            ambientAudio = document.createElement('audio');
+            ambientAudio.src = 'assets/ambience.mp3';  
+            ambientAudio.loop = true;
+            ambientAudio.volume = 0.15; 
+            ambientAudio.load();
+
+            ambientAudio.play().catch(function () {
+                console.log("Ambient autoplay blocked, enabling on first click...");
+                document.body.addEventListener('click', function () {
+                    ambientAudio.play();
+                }, { once: true });
+            });
+
+            document.body.appendChild(ambientAudio);
+            
+            // create skybox
+            var path = "assets/skybox/";  
+            var format = '.png';  
+            var urls = [
+                path + 'FullMoonRight2048' + format, // right
+                path + 'FullMoonLeft2048' + format, // left
+                path + 'FullMoonUp2048' + format, // top
+                path + 'FullMoonDown2048' + format, // bottom
+                path + 'FullMoonBack2048' + format, // back
+                path + 'FullMoonFront2048' + format  // front
+            ];
+
+            var textureCube = THREE.ImageUtils.loadTextureCube(urls);
+            var shader = THREE.ShaderLib["cube"];
+            shader.uniforms["tCube"].value = textureCube;
+
+            var material = new THREE.ShaderMaterial({
+                fragmentShader: shader.fragmentShader,
+                vertexShader: shader.vertexShader,
+                uniforms: shader.uniforms,
+                depthWrite: false,
+                side: THREE.BackSide
+            });
+
+            var skybox = new THREE.Mesh(
+                new THREE.CubeGeometry(1000, 1000, 1000),
+                material
+            );
+            scene.add(skybox);
+
+            // create the camera, position it and point to the centre of the scene
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.x = 4;
+            camera.position.y = 5;
+            camera.position.z = 30;
+            camera.lookAt(new THREE.Vector3(4, 5, 0));
+           
+            
+            // create the render and set the size and other parameters
+            renderer = new THREE.WebGLRenderer();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x349AFF);
+            renderer.shadowMapEnabled = true;
+            renderer.shadowMapType = THREE.PCFShadowMap;
+            // create camera controls - Fly
+            controls = new THREE.FlyControls(camera);
+            controls.movementSpeed = 5;
+            controls.autoForward = false;
+            controls.rollSpeed = Math.PI / 12;
+
+
+            // load the textures
+            
+            var texSand = THREE.ImageUtils.loadTexture("assets/sand.jpg");
+            
+            texSand.wrapS = texSand.wrapT = THREE.RepeatWrapping;
+
+
+
+            // load the terrain
+            var terrainMaterial = new THREE.MeshPhongMaterial({
+                //load sand texture onto here
+                map: texSand,
+
+            });
+
+            // create the terrain
+            var loader = new THREE.OBJLoader();
+            var obj = loader.load("assets/terrain.obj",
+                function (obj) {
+                    obj.traverse(function (child) {
+                        if (child instanceof THREE.Mesh)
+                            terrain = new THREE.Mesh(child.geometry, terrainMaterial);
+                    });
+                    terrain.castShadow = true; 
+                    terrain.receiveShadow = true; 
+                    scene.add(terrain);
+                    
+                    
+
+
+                });
+
+            // create water material and shader
+            waterMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    waterColor: { type: "v3", value: new THREE.Vector3(0.01, 0.01, 0.05) },
+                    skyColor: { type: "v3", value: new THREE.Vector3(0.0, 0.0, 0.0) },
+                    t: { type: "f", value: 0.0 },
+                },
+                attributes: {},
+                vertexShader: $('#waterVertexShader').text(),
+                fragmentShader: $('#waterFragmentShader').text()
+            });
+            waterMaterial.transparent = true;
+
+            // create the water
+            var loader2 = new THREE.OBJLoader();
+            var obj = loader2.load("assets/water.obj",
+                function (obj) {
+                    obj.traverse(function (child) {
+                        if (child instanceof THREE.Mesh) {
+                            water = new THREE.Mesh(child.geometry, waterMaterial);
+                        }
+                    });
+
+                    water.position.y = 4.6;
+                    water.scale.x = 0.5;
+                    water.scale.z = 0.5;
+                    water.castShadow = true;
+                    scene.add(water);
+                });
+                // add plane to scene with its own textures
+            var loader3 = new THREE.OBJLoader();
+            var textureLoader = new THREE.TextureLoader();
+
+            var colorMap = textureLoader.load("assets/Plane_Colour.png", function (colorMap) {
+                var normalMap = textureLoader.load("assets/Plane_Normal.png", function (normalMap) {
+                    var material = new THREE.MeshPhongMaterial({
+                        map: colorMap,
+                        normalMap: normalMap // textures
+                    });
+
+                    loader3.load("assets/Plane.obj", function (obj) {
+                        obj.traverse(function (child) {
+                            if (child instanceof THREE.Mesh) {
+                                plane = new THREE.Mesh(child.geometry, material);
+                            }
+                        });
+
+                        // position the object
+                        plane.scale.set(1, 1, 1);
+                        plane.position.y = 10;
+                        plane.position.z = 0;
+
+                        // add the plane to the scene
+                        plane.castShadow = true;
+                        plane.receiveShadow = true;
+                        scene.add(plane);
+                        // add plane audio
+                        planeAudio = document.createElement('audio');
+                        planeAudio.src = 'assets/plane.mp3';
+                        planeAudio.loop = true;
+                        planeAudio.volume = 0.05;
+                        planeAudio.load();
+
+                        planeAudio.play().catch(function () {
+                            console.log("Autoplay blocked, waiting for interaction...");
+                            document.body.addEventListener('click', function () {
+                                planeAudio.play();
+                            }, { once: true });
+                        });
+
+                        document.body.appendChild(planeAudio);
+                    });
+                });
+            });
+
+
+
+            // add campfire to scene with its own textures
+            var loader4 = new THREE.OBJLoader();
+            var textureLoader = new THREE.TextureLoader();
+
+            var colorMapCampfire = textureLoader.load("assets/Campfire_Colour.png", function (colorMapCampfire) {
+                var normalMapCampfire = textureLoader.load("assets/Campfire_Normal.png", function (normalMapCampfire) {
+                    var campfireMaterial = new THREE.MeshPhongMaterial({
+                        map: colorMapCampfire,
+                        normalMap: normalMapCampfire //textures
+                    });
+
+                    loader4.load("assets/Campfire.obj", function (obj) {
+                        obj.traverse(function (child) {
+                            if (child instanceof THREE.Mesh) {
+                                campfire = new THREE.Mesh(child.geometry, campfireMaterial);
+                            }
+                        });
+
+                        // position the object
+                        campfire.scale.set(0.01, 0.01, 0.01);
+                        campfire.position.y = 8.34;
+                        campfire.position.z = 10;
+                        campfire.position.x = -10;
+
+                        // add the campfire to the scene
+                        campfire.castShadow = true;
+                        campfire.receiveShadow = true;
+                        scene.add(campfire);
+                        // add campfire audio
+                        campfireAudio = document.createElement('audio');
+                        campfireAudio.src = 'assets/campfire.mp3';
+                        campfireAudio.loop = true;
+                        campfireAudio.volume = 0.5;
+                        campfireAudio.autoplay = true;
+                        campfireAudio.load();
+                        campfireAudio.play().catch(function (error) {
+                            console.log("Autoplay prevented, will play on first interaction.");
+                            document.body.addEventListener('click', function () {
+                                campfireAudio.play();
+                            }, { once: true });
+                        });
+                        document.body.appendChild(campfireAudio);
+                        
+
+
+                        // smoke Particle System Init 
+                        smokeParticles = [];
+                        smokeGeometry = new THREE.Geometry();
+                        smokeTexture = THREE.ImageUtils.loadTexture('assets/smoke.png');
+
+                        var smokeMaterial = new THREE.ParticleBasicMaterial({
+                            size: 2,
+                            map: smokeTexture,
+                            transparent: true,
+                            opacity: 0.1,
+                            depthWrite: false,
+                            blending: THREE.AdditiveBlending,
+
+
+
+
+                        });
+                        var smokeSystem = new THREE.ParticleSystem(smokeGeometry, smokeMaterial);
+                        scene.add(smokeSystem);
+                        // fire Particle System Init 
+                        fireParticles = [];
+                        fireGeometry = new THREE.Geometry();
+                        var fireTexture = THREE.ImageUtils.loadTexture('assets/fire.png');
+
+                        var fireMaterial = new THREE.ParticleBasicMaterial({
+                            size: 0.6,
+                            map: fireTexture,
+                            transparent: true,
+                            opacity: 0.6,
+                            depthWrite: false,
+                            blending: THREE.AdditiveBlending
+                        });
+
+                        var fireSystem = new THREE.ParticleSystem(fireGeometry, fireMaterial);
+                        scene.add(fireSystem);
+
+                        function emitSmokePlume() {
+                            for (var i = 0; i < 50; i++) {
+                                var particle = new THREE.Vector3(
+                                    campfire.position.x + (Math.random() - 0.5) * 0.2,
+                                    campfire.position.y + 0.2,
+                                    campfire.position.z + (Math.random() - 0.5) * 0.2
+                                );
+                                smokeGeometry.vertices.push(particle);
+                                smokeParticles.push({
+                                    velocity: Math.random() * 0.02 + 0.01,
+                                    vx: (Math.random() - 0.5) * 0.005,
+                                    vz: (Math.random() - 0.5) * 0.005
+                                });
+                            }
+                        }
+                        function emitFirePlume() {
+                            for (var i = 0; i < 20; i++) {
+                                var particle = new THREE.Vector3(
+                                    campfire.position.x + (Math.random() - 0.5) * 0.1,
+                                    campfire.position.y,
+                                    campfire.position.z + (Math.random() - 0.5) * 0.1
+                                );
+                                fireGeometry.vertices.push(particle);
+                                fireParticles.push({
+                                    velocity: Math.random() * 0.005 + 0.002,
+                                    lifespan: 0,
+                                    maxLife: Math.random() * 0.5 + 0.5
+                                });
+                            }
+                        }
+
+
+                        // particle animation
+                        animateSmoke = function () {
+                            var time = clock.getElapsedTime();
+
+                            // smoke emission
+                            if (time > nextPlumeTime) {
+                                emitSmokePlume();
+                                emitFirePlume();
+                                nextPlumeTime = time + Math.random() * 3 + 2;
+                            }
+
+                            // animate smoke particles
+                            for (var i = 0; i < smokeGeometry.vertices.length; i++) {
+                                var particle = smokeGeometry.vertices[i];
+                                var data = smokeParticles[i];
+
+                                particle.y += data.velocity;
+                                particle.x += data.vx;
+                                particle.z += data.vz;
+                                let heightFactor = (particle.y - campfire.position.y) * 0.5;
+                                particle.x += data.vx * heightFactor;
+                                particle.z += data.vz * heightFactor;
+
+                                if (particle.y > campfire.position.y + 10) {
+                                    particle.set(
+                                        campfire.position.x + (Math.random() - 0.5) * 0.2,
+                                        campfire.position.y + 0.2,
+                                        campfire.position.z + (Math.random() - 0.5) * 0.2
+                                    );
+
+                                    smokeParticles[i] = {
+                                        velocity: Math.random() * 0.02 + 0.01,
+                                        vx: (Math.random() - 0.5) * 0.005,
+                                        vz: (Math.random() - 0.5) * 0.005
+                                    };
+                                }
+                            }
+
+                            smokeGeometry.verticesNeedUpdate = true;
+
+                            // animate fire particles
+                            var delta = clock.getDelta();
+                            for (var i = 0; i < fireGeometry.vertices.length; i++) {
+                                var particle = fireGeometry.vertices[i];
+                                var data = fireParticles[i];
+
+                                particle.y += data.velocity;
+                                data.lifespan += delta;
+
+                                if (data.lifespan > data.maxLife || particle.y > campfire.position.y + 0.3) {
+                                    particle.set(
+                                        campfire.position.x + (Math.random() - 0.5) * 0.1,
+                                        campfire.position.y,
+                                        campfire.position.z + (Math.random() - 0.5) * 0.1
+                                    );
+                                    data.velocity = Math.random() * 0.005 + 0.002;
+                                    data.lifespan = 0;
+                                    data.maxLife = Math.random() * 0.5 + 0.5;
+                                }
+                            }
+
+                            fireGeometry.verticesNeedUpdate = true;
+                        };
+                    });
+                });
+            });
+            // add tent to scene with its own textures
+            var loader5 = new THREE.OBJLoader();
+            var textureLoader = new THREE.TextureLoader();
+            var colorMapTent = textureLoader.load("assets/Tent_Colour.png", function (colorMapTent) {
+                var normalMapTent = textureLoader.load("assets/Tent_Normal.png", function (normalMapTent) {
+                    var tentMaterial = new THREE.MeshPhongMaterial({
+                        map: colorMapTent,
+                        normalMap: normalMapTent // textures
+                    });
+
+                    loader5.load("assets/Tent.obj", function (obj) {
+                        obj.traverse(function (child) {
+                            if (child instanceof THREE.Mesh) {
+                                tent = new THREE.Mesh(child.geometry, tentMaterial);
+
+                            }
+                        });
+
+                        // position the object
+                        tent.scale.set(0.5, 0.5, 0.5);
+                        tent.position.y = 8.40;
+                        tent.position.z = 10;
+                        tent.position.x = -15;
+
+                        // add the tent to the scene
+                        tent.castShadow = true;
+                        tent.receiveShadow = true;
+                        scene.add(tent);
+                    });
+                });
+            });
+            // add palm tree to scene with its own textures
+            var loader6 = new THREE.OBJLoader();
+            var textureLoader = new THREE.TextureLoader();
+            var colorMapPalmTree = textureLoader.load("assets/Palmtree_Colour.png", function (colorMapPalmTree) {
+                var normalMapPalmTree = textureLoader.load("assets/Palmtree_Normal.png", function (normalMapPalmTree) {
+                    var palmtreeMaterial = new THREE.MeshPhongMaterial({
+                        map: colorMapPalmTree,
+                        normalMap: normalMapPalmTree // textures
+                    });
+
+                    loader6.load("assets/Palmtree.obj", function (obj) {
+                        obj.traverse(function (child) {
+                            if (child instanceof THREE.Mesh) {
+                                palmtree = new THREE.Mesh(child.geometry, palmtreeMaterial);
+                            }
+                        });
+
+                        // position the object
+                        palmtree.scale.set(0.2, 0.2, 0.2);
+                        palmtree.position.y = 6;
+                        palmtree.position.z = 0;
+                        palmtree.position.x = 15;
+
+                        // add the palm tree to the scene
+                        palmtree.castShadow = true;
+                        palmtree.receiveShadow = true;
+                        scene.add(palmtree);
+                        // palm tree 2
+                        var palmtree2 = palmtree.clone();
+                        palmtree2.position.x = -15;
+                        palmtree2.position.z = 5;
+                        scene.add(palmtree2);
+                        // palm tree 3
+                        var palmtree3 = palmtree.clone();
+                        palmtree3.position.x = 15;
+                        palmtree3.position.z = -5;
+                        scene.add(palmtree3);
+                        // palm tree 4
+                        var palmtree4 = palmtree.clone();
+                        palmtree4.position.x = -15;
+                        palmtree4.position.z = -20;
+                        scene.add(palmtree4);
+                        
+                        
+
+                    });
+                });
+            });
+
+
+
+            // spotlight
+            var spotLight = new THREE.SpotLight(0xADD8E6);
+            spotLight.position.set(0,40, 0);
+            spotLight.intensity = 0.3;
+            spotLight.shadowMapWidth = 2048;
+            spotLight.shadowMapHeight = 2048;
+            spotLight.shadowCameraNear = 20;
+            spotLight.shadowCameraFar = 60;
+            spotLight.shadowCameraFov = 60;
+            spotLight.shadowDarkness = 0.5;
+            spotLight.shadowBias = 0.001;
+            spotLight.castShadow = true;
+            scene.add(spotLight);
+
+            
+
+            // orange point light to campfire
+            var pointLight = new THREE.PointLight(0xffa500, 1, 10);
+            pointLight.position.set(-10.0, 7 + 1.5, 10);
+            pointLight.intensity = 1.5;
+
+
+            scene.add(pointLight);
+           
+            // audio filters to make the sounds muffled/muted when underwater
+            document.body.addEventListener('click', function initAudioFilters() {
+                document.body.removeEventListener('click', initAudioFilters); 
+
+                listenerContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                // ambient filter
+                const ambientSource = listenerContext.createMediaElementSource(ambientAudio);
+                ambientFilter = listenerContext.createBiquadFilter();
+                ambientFilter.type = 'lowpass';
+                ambientFilter.frequency.value = 5000;
+                ambientSource.connect(ambientFilter);
+                ambientFilter.connect(listenerContext.destination);
+
+                // campfire filter
+                const campfireSource = listenerContext.createMediaElementSource(campfireAudio);
+                campfireFilter = listenerContext.createBiquadFilter();
+                campfireFilter.type = 'lowpass';
+                campfireFilter.frequency.value = 5000;
+                campfireSource.connect(campfireFilter);
+                campfireFilter.connect(listenerContext.destination);
+
+                // plane filter
+                const planeSource = listenerContext.createMediaElementSource(planeAudio);
+                planeFilter = listenerContext.createBiquadFilter();
+                planeFilter.type = 'lowpass';
+                planeFilter.frequency.value = 5000;
+                planeSource.connect(planeFilter);
+                planeFilter.connect(listenerContext.destination);
+                
+                
+            });
+
+
+            // TECHNICALITIES
+
+            // add the output of the renderer to the html element
+            $("#div3D").append(renderer.domElement);
+
+            // JS Events
+            document.addEventListener('mousemove', onDocumentMouseMove, false);
+            window.addEventListener('resize', onWindowResize, false);
+
+            // initiate rendering/animation loop
+            animate();
+        });
+
+
+        var clock = new THREE.Clock();
+
+        function animate() {
+            // JavaScript stuff (mandatory)
+            requestAnimationFrame(animate);
+
+            // Animate the camera
+            controls.update(clock.getDelta());
+
+            // Animate the waves
+            waterMaterial.uniforms.t.value = clock.getElapsedTime();
+
+
+            //// animate the plane flying round in a circle if it isn't null
+            if (plane != null) {
+                plane.position.x = 15 * Math.cos(clock.getElapsedTime());
+                plane.position.z = 15 * Math.sin(clock.getElapsedTime());
+                plane.rotation.y = -clock.getElapsedTime() - Math.PI / 2;
+
+
+
+            }
+
+
+            // Update smoke particles
+            if (typeof animateSmoke === 'function') animateSmoke();
+
+            // campfire audio
+            if (campfire && campfireAudio) {
+                var distance = camera.position.distanceTo(campfire.position);
+                var volume = THREE.Math.clamp(1 - distance / 15, 0, 1); // fade out over 15 units
+                campfireAudio.volume = volume * 1.0;
+            }
+
+
+
+            // plane audio
+            if (plane && planeAudio) {
+                var distance = camera.position.distanceTo(plane.position);
+                var volume = THREE.Math.clamp(1 - distance / 30, 0, 1); // fade out over 30 units
+                planeAudio.volume = volume * 0.2; 
+            }
+
+
+            
+
+            // muffle the sounds if they're underwater
+            if (camera.position.y < 4.6) {
+                if (ambientFilter) ambientFilter.frequency.value = 600;
+                if (campfireFilter) campfireFilter.frequency.value = 600;
+                if (planeFilter) planeFilter.frequency.value = 600;
+            } else {
+                if (ambientFilter) ambientFilter.frequency.value = 5000;
+                if (campfireFilter) campfireFilter.frequency.value = 5000;
+                if (planeFilter) planeFilter.frequency.value = 5000;
+            }
+
+
+
+
+            // render
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize(event) {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+        }
+
+        function onDocumentMouseMove(event) {
+        }
+    </script>
+</body>
+</html>

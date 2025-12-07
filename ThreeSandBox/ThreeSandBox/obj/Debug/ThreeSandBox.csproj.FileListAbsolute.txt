@@ -1,0 +1,7 @@
+C:\Users\tomhe\Documents\GitHub\WebGl_project\ThreeSandBox\ThreeSandBox\bin\ThreeSandBox.dll.config
+C:\Users\tomhe\Documents\GitHub\WebGl_project\ThreeSandBox\ThreeSandBox\bin\ThreeSandBox.dll
+C:\Users\tomhe\Documents\GitHub\WebGl_project\ThreeSandBox\ThreeSandBox\bin\ThreeSandBox.pdb
+C:\Users\tomhe\Documents\GitHub\WebGl_project\ThreeSandBox\ThreeSandBox\obj\Debug\ThreeSandBox.csproj.AssemblyReference.cache
+C:\Users\tomhe\Documents\GitHub\WebGl_project\ThreeSandBox\ThreeSandBox\obj\Debug\ThreeSandBox.csproj.CoreCompileInputs.cache
+C:\Users\tomhe\Documents\GitHub\WebGl_project\ThreeSandBox\ThreeSandBox\obj\Debug\ThreeSandBox.dll
+C:\Users\tomhe\Documents\GitHub\WebGl_project\ThreeSandBox\ThreeSandBox\obj\Debug\ThreeSandBox.pdb

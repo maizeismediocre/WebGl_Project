@@ -1,0 +1,53 @@
+/***********************************************************************
+/**** Page Elements ****/
+html
+{
+	margin: 0;
+	padding: 0;
+}
+body
+{
+    font: normal small Arial, Verdana, Helvetica, sans-serif;
+    font-size: 11pt;
+	background: #fffdda;
+	margin: 0;
+	padding: 0;
+	text-align: center;
+}
+#page
+{
+	background: white;
+	width: 1000px;
+	text-align: left;
+	border: solid black 1px;
+	margin: auto;
+}
+#content
+{
+	background: white;
+	padding: 1em;
+}
+
+/***********************************************************************
+/* Header, Page Decoration and Menu */
+
+#header
+{
+	height: 118px;
+	min-width: 500px;
+	background: black;
+    padding:0;
+    margin:0;
+}
+#header h1
+{
+    height: 118px;
+	font-size: 20pt;
+	color: White;
+	padding: 16px;
+	margin: 0;
+	border: 0;
+}
+#header h1:first-line {font-size: 32pt;}
+#header h1 a { color: white; text-decoration:none;; }
+#header h1 a:hover { color: white; text-decoration:none; }
